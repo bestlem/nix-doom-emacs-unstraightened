@@ -391,7 +391,7 @@ let
             # This causes infinite recursion, and I have not wrapped my head around why yet.
             # (name == "lsp-mode") || lib.elem esuper.lsp-mode pkg.packageRequires;
             (name == "lsp-mode")
-            || (lib.elem "lsp-mode" (map (p: p.ename or "not-a-package") pkg.packageRequires));
+            || (lib.elem "lsp-mode" (map (p: p.ename or "not-a-package") (pkg.packageRequires or [ ])));
         in
         pkg.overrideAttrs (
           lib.optionalAttrs isLspModeOrDependant {
