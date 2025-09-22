@@ -35,6 +35,8 @@
   ],
   # Args to pass to `doom +org tangle`.
   tangleArgs ? null,
+  # true to build lsp-mode and dependant packages with LSP_USE_PLISTS set
+  lspUsePlists ? true,
 
   callPackage,
   callPackages,
@@ -260,12 +262,10 @@ let
                     # We only depend on this during evaluation. Force a dependency so it does not
                     # get garbage-collected, which slows down subsequent evaluation.
                     inherit reqfile;
-                    postInstall =
-                      (prev.postInstall or "")
-                      + ''
-                        mkdir -p $out/nix-support
-                        ln -s $reqfile $out/nix-support/unstraightened-dependencies.json
-                      '';
+                    postInstall = (prev.postInstall or "") + ''
+                      mkdir -p $out/nix-support
+                      ln -s $reqfile $out/nix-support/unstraightened-dependencies.json
+                    '';
                   })
               );
           # nixpkgs uses fetchZip for these, so epkg.src.gitRepoUrl is unset.
@@ -373,21 +373,55 @@ let
       # But we do need some filtering (currently just "emacs" itself) to avoid infinite recursion
       # while populating repoToPin.
       upstreamWithPins = lib.mapAttrs (
-        n: p: if lib.elem p [ esuper.emacs ] then p else makePackage n { }
+        n: p: if (!lib.isDerivation p) || lib.elem p [ esuper.emacs ] then p else makePackage n { }
       ) esuper;
       doomPackages = lib.mapAttrs makePackage doomPackageSet;
       allPackages = upstreamWithPins // doomPackages;
     in
     allPackages
   );
+  doomEmacsPackages' = doomEmacsPackages.overrideScope (
+    eself: esuper:
+    let
+      manglePackage =
+        name: pkg:
+        let
+          # TODO: actually make the "or dependant" bit work without infinite recursion
+          isLspModeOrDependant =
+            # This causes infinite recursion, and I have not wrapped my head around why yet.
+            # (name == "lsp-mode") || lib.elem esuper.lsp-mode pkg.packageRequires;
+            (name == "lsp-mode")
+            || (lib.elem "lsp-mode" (
+              map (
+                p:
+                if p == null then
+                  "null"
+                else if p == esuper.emacs then
+                  "emacs"
+                else
+                  p.ename
+              ) pkg.packageRequires
+            ));
+        in
+        pkg.overrideAttrs (
+          lib.optionalAttrs isLspModeOrDependant {
+            preBuild = (pkg.preBuild or "") + ''
+              export LSP_USE_PLISTS=1
+            '';
+          }
+        );
+      maybeManglePackage =
+        name: pkg: if (lib.isDerivation pkg) && pkg != esuper.emacs then (manglePackage name pkg) else pkg;
+      result = lib.mapAttrs maybeManglePackage esuper;
+    in
+    result
+  );
 
   # Step 3: Build an emacsWithPackages, pulling all packages from step 1 from
   # the set from step 2.
-  emacsWithPackages = doomEmacsPackages.emacsWithPackages (
+  emacsWithPackages = doomEmacsPackages'.emacsWithPackages (
     epkgs:
-    (map (p: epkgs.${p}) (lib.attrNames doomPackageSet))
-    ++ (extraPackages epkgs)
-    ++ extraBinPackages
+    (map (p: epkgs.${p}) (lib.attrNames doomPackageSet)) ++ (extraPackages epkgs) ++ extraBinPackages
   );
 
   # Step 4: build a DOOMDIR, Doom profile and profile loader using Emacs from
@@ -439,6 +473,7 @@ let
       doomLocalDir
       doomSource
       emacsWithPackages
+      lspUsePlists
       ;
     profileName = nonEmptyProfileName;
 
